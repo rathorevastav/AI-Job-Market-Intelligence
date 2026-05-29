@@ -30,9 +30,11 @@ HOW TO RUN:
 from __future__ import annotations
 
 import math
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+import pandas as pd
 import plotly.express as px
 import streamlit as st
 
@@ -701,7 +703,6 @@ def _render_sidebar() -> dict:
 # ============================================================================
 
 def _page_overview(ctx: dict) -> None:
-    # ── Page header ───────────────────────────────────────────────────
     st.markdown("""
     <div style="margin-bottom:24px">
         <h1 style="color:#0d1f17;font-size:26px;font-weight:700;margin:0;letter-spacing:-0.5px">
@@ -713,128 +714,179 @@ def _page_overview(ctx: dict) -> None:
     </div>
     """, unsafe_allow_html=True)
 
-    health      = _load_health()
-    skills      = _load_top_skills(limit=10, country=ctx["country"], posted_after=ctx["posted_after"])
-    scrape_runs = _load_scrape_runs(limit=8)
+    # ── Data loading — each call isolated so one failure doesn't block the rest ──
+    try:
+        health = _load_health()
+    except Exception:
+        health = {"api_status": "error", "database_connected": False, "total_jobs": 0}
+
+    try:
+        skills = _load_top_skills(
+            limit=10, country=ctx["country"], posted_after=ctx["posted_after"]
+        )
+    except Exception:
+        skills = []
+
+    try:
+        scrape_runs = _load_scrape_runs(limit=8)
+    except Exception:
+        scrape_runs = []
+
+    try:
+        recent_result = _load_jobs(
+            skill=None, country=ctx["country"], city=None, company_name=None,
+            experience_level=None, job_type=None, is_remote=None, source_platform=None,
+            search_query=None, posted_after=ctx["posted_after"], posted_before=None,
+            page=1, page_size=100, order_by="posted_at", descending=True,
+        )
+        recent_jobs = (recent_result or {}).get("items") or []
+        if not isinstance(recent_jobs, list):
+            recent_jobs = []
+    except Exception:
+        recent_jobs = []
+
     latest_run  = health.get("latest_scrape_run") or {}
+    total_jobs  = health.get("total_jobs") or 0
+    total_recent = len(recent_jobs)
 
-    # Load a page of recent jobs for derived metrics (top companies, titles, platform split)
-    recent = _load_jobs(
-        skill=None, country=ctx["country"], city=None, company_name=None,
-        experience_level=None, job_type=None, is_remote=None, source_platform=None,
-        search_query=None, posted_after=ctx["posted_after"], posted_before=None,
-        page=1, page_size=100, order_by="posted_at", descending=True,
-    )
-    recent_jobs = recent.get("items", []) if recent else []
-
-    # Derive counts from recent_jobs for fallback metrics
-    remote_count  = sum(1 for j in recent_jobs if j.get("is_remote"))
-    total_recent  = len(recent_jobs)
-    remote_pct    = f"{round(remote_count / total_recent * 100)}%" if total_recent else "—"
+    try:
+        remote_count = sum(1 for j in recent_jobs if j.get("is_remote"))
+        remote_pct = f"{round(remote_count / total_recent * 100)}%" if total_recent else "—"
+    except Exception:
+        remote_pct = "—"
 
     # ── KPI row ───────────────────────────────────────────────────────
-    m1, m2, m3, m4 = st.columns(4)
-    with m1:
-        utils.metric_card("Total Jobs Indexed", utils.fmt_number(health.get("total_jobs", 0)))
-    with m2:
-        # Fall back to job count from recent page when ML skills aren't ready
-        skills_val = str(len(skills)) if skills else (str(total_recent) + " jobs")
-        skills_label = "Skills Tracked" if skills else "Recent Jobs"
-        utils.metric_card(skills_label, skills_val)
-    with m3:
-        utils.metric_card("Remote Jobs", remote_pct)
-    with m4:
-        last_s = utils.fmt_relative_time(latest_run.get("started_at")) if latest_run else "Never"
-        utils.metric_card("Last Scrape", last_s)
+    try:
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.metric("Total Jobs Indexed", f"{total_jobs:,}")
+        with m2:
+            if skills:
+                st.metric("Skills Tracked", str(len(skills)))
+            else:
+                st.metric("Recent Jobs", str(total_recent))
+        with m3:
+            st.metric("Remote Jobs", remote_pct)
+        with m4:
+            last_s = utils.fmt_relative_time(latest_run.get("started_at")) if latest_run else "Never"
+            st.metric("Last Scrape", last_s)
+    except Exception as e:
+        st.caption(f"Metrics unavailable: {e}")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Main content ──────────────────────────────────────────────────
-    left, right = st.columns([3, 2], gap="large")
+    # ── Left column: skills or job title fallback ─────────────────────
+    left, right = st.columns([3, 2])
 
     with left:
         _section_label("Top In-Demand Skills")
-        if skills:
-            st.plotly_chart(charts.bar_top_skills(skills, title="", max_skills=10),
-                            use_container_width=True)
-        elif recent_jobs:
-            # ML not run yet — show top job titles as a useful fallback
-            from collections import Counter
-            title_counts = Counter(
-                j.get("title", "").split("(")[0].strip()
-                for j in recent_jobs if j.get("title")
-            ).most_common(10)
-            if title_counts:
-                import pandas as pd
-                df_titles = pd.DataFrame(title_counts, columns=["title", "count"])
-                fig_t = px.bar(
-                    df_titles.sort_values("count"),
-                    x="count", y="title", orientation="h",
-                    color="count",
-                    color_continuous_scale=["#d1fae5", "#10b981", "#065f46"],
-                    labels={"count": "Postings", "title": ""},
-                )
-                fig_t.update_coloraxes(showscale=False)
-                fig_t.update_traces(marker_line_width=0, hovertemplate="<b>%{y}</b>  ·  %{x:,}<extra></extra>")
-                fig_t.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                                    margin=dict(l=10,r=10,t=10,b=10), font=dict(color="#374151", family="Inter, sans-serif"))
-                fig_t.update_xaxes(showgrid=False, zeroline=False, color="#9ca3af")
-                fig_t.update_yaxes(showgrid=False, zeroline=False, color="#374151")
-                st.plotly_chart(fig_t, use_container_width=True)
-                st.caption("Showing top job titles — run `python -m ml.scheduler --only-skills` for skill analytics")
-        else:
-            _empty_card("No skill data yet", "python -m ml.scheduler --skip-scraper")
+        try:
+            if skills:
+                fig = charts.bar_top_skills(skills, title="", max_skills=10)
+                st.plotly_chart(fig, use_container_width=True)
+            elif recent_jobs:
+                title_counts = Counter(
+                    j.get("title", "").split("(")[0].strip()
+                    for j in recent_jobs if j.get("title")
+                ).most_common(10)
+                if title_counts:
+                    df_titles = pd.DataFrame(title_counts, columns=["title", "count"])
+                    fig_t = px.bar(
+                        df_titles.sort_values("count"),
+                        x="count", y="title", orientation="h",
+                        color="count",
+                        color_continuous_scale=["#d1fae5", "#10b981", "#065f46"],
+                        labels={"count": "Postings", "title": ""},
+                    )
+                    fig_t.update_coloraxes(showscale=False)
+                    fig_t.update_traces(
+                        marker_line_width=0,
+                        hovertemplate="<b>%{y}</b>  ·  %{x:,}<extra></extra>",
+                    )
+                    fig_t.update_layout(
+                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                        margin=dict(l=10, r=10, t=10, b=10),
+                        font=dict(color="#374151", family="Inter, sans-serif"),
+                    )
+                    fig_t.update_xaxes(showgrid=False, zeroline=False, color="#9ca3af")
+                    fig_t.update_yaxes(showgrid=False, zeroline=False, color="#374151")
+                    st.plotly_chart(fig_t, use_container_width=True)
+                    st.caption("Top job titles — run `python -m ml.scheduler --only-skills` for skill analytics")
+                else:
+                    _empty_card("No job titles in current view")
+            else:
+                _empty_card("No skill data yet", "python -m ml.scheduler --skip-scraper")
+        except Exception:
+            _empty_card("Skills chart unavailable", "python -m ml.scheduler --skip-scraper")
 
+    # ── Right column: top companies ───────────────────────────────────
     with right:
         _section_label("Top Hiring Companies")
-        if recent_jobs:
-            from collections import Counter
-            co_counts = Counter(
-                j.get("company_name") for j in recent_jobs
-                if j.get("company_name")
-            ).most_common(8)
-            if co_counts:
-                import pandas as pd
-                df_co = pd.DataFrame(co_counts, columns=["company", "jobs"])
-                fig_co = px.bar(
-                    df_co.sort_values("jobs"),
-                    x="jobs", y="company", orientation="h",
-                    color="jobs",
-                    color_continuous_scale=["#d1fae5", "#059669"],
-                    labels={"jobs": "Job Postings", "company": ""},
-                )
-                fig_co.update_coloraxes(showscale=False)
-                fig_co.update_traces(marker_line_width=0, marker=dict(cornerradius=3),
-                                     hovertemplate="<b>%{y}</b>  ·  %{x}<extra></extra>")
-                fig_co.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                                     margin=dict(l=10,r=10,t=10,b=10), font=dict(color="#374151", family="Inter, sans-serif"))
-                fig_co.update_xaxes(showgrid=False, zeroline=False, color="#9ca3af")
-                fig_co.update_yaxes(showgrid=False, zeroline=False, color="#374151")
-                st.plotly_chart(fig_co, use_container_width=True)
-        elif scrape_runs:
-            st.plotly_chart(charts.bar_scrape_history(scrape_runs, title=""), use_container_width=True)
-        else:
-            _empty_card("No data yet", "Run the scraper first")
+        try:
+            if recent_jobs:
+                co_counts = Counter(
+                    j.get("company_name") for j in recent_jobs
+                    if j.get("company_name")
+                ).most_common(8)
+                if co_counts:
+                    df_co = pd.DataFrame(co_counts, columns=["company", "jobs"])
+                    fig_co = px.bar(
+                        df_co.sort_values("jobs"),
+                        x="jobs", y="company", orientation="h",
+                        color="jobs",
+                        color_continuous_scale=["#d1fae5", "#059669"],
+                        labels={"jobs": "Job Postings", "company": ""},
+                    )
+                    fig_co.update_coloraxes(showscale=False)
+                    fig_co.update_traces(
+                        marker_line_width=0,
+                        hovertemplate="<b>%{y}</b>  ·  %{x}<extra></extra>",
+                    )
+                    fig_co.update_layout(
+                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                        margin=dict(l=10, r=10, t=10, b=10),
+                        font=dict(color="#374151", family="Inter, sans-serif"),
+                    )
+                    fig_co.update_xaxes(showgrid=False, zeroline=False, color="#9ca3af")
+                    fig_co.update_yaxes(showgrid=False, zeroline=False, color="#374151")
+                    st.plotly_chart(fig_co, use_container_width=True)
+                else:
+                    _empty_card("No company data in current view")
+            elif scrape_runs:
+                fig_h = charts.bar_scrape_history(scrape_runs, title="")
+                st.plotly_chart(fig_h, use_container_width=True)
+            else:
+                _empty_card("No data yet", "Run the scraper first")
+        except Exception:
+            _empty_card("Companies chart unavailable")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Audit table ───────────────────────────────────────────────────
     _section_label("Scraper Audit Log")
-    if scrape_runs:
-        df = utils.scrape_runs_to_dataframe(scrape_runs)
-        st.dataframe(df, use_container_width=True, hide_index=True)
-    else:
-        _empty_card("No scrape runs recorded", "python -m scraper.playwright_scraper")
+    try:
+        if scrape_runs:
+            df_runs = utils.scrape_runs_to_dataframe(scrape_runs)
+            st.dataframe(df_runs, use_container_width=True, hide_index=True)
+        else:
+            _empty_card("No scrape runs recorded", "python -m scraper.playwright_scraper")
+    except Exception:
+        _empty_card("Audit log unavailable")
 
-    if latest_run:
-        with st.expander("Latest Scrape Run Detail"):
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Status",     utils.fmt_status_badge(latest_run.get("status", "")))
-            c2.metric("Inserted",   utils.fmt_number(latest_run.get("jobs_inserted", 0)))
-            c3.metric("Found",      utils.fmt_number(latest_run.get("jobs_found", 0)))
-            c4.metric("Duplicates", utils.fmt_number(latest_run.get("jobs_skipped_duplicate", 0)))
-            if err := latest_run.get("error_message"):
-                st.error(f"Error: {err[:300]}")
+    # ── Latest run detail ─────────────────────────────────────────────
+    try:
+        if latest_run:
+            with st.expander("Latest Scrape Run Detail"):
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Status",     utils.fmt_status_badge(latest_run.get("status") or ""))
+                c2.metric("Inserted",   utils.fmt_number(latest_run.get("jobs_inserted") or 0))
+                c3.metric("Found",      utils.fmt_number(latest_run.get("jobs_found") or 0))
+                c4.metric("Duplicates", utils.fmt_number(latest_run.get("jobs_skipped_duplicate") or 0))
+                err = latest_run.get("error_message")
+                if err:
+                    st.error(str(err)[:300])
+    except Exception:
+        pass  # expander failure is non-critical — silently skip
 
 
 # ============================================================================
@@ -967,7 +1019,7 @@ def _page_salary(ctx: dict) -> None:
 
     salary_by_skill = utils.build_salary_by_skill(jobs_with_salary)
 
-    chart_col, table_col = st.columns([3, 2], gap="large")
+    chart_col, table_col = st.columns([3, 2])
 
     with chart_col:
         _section_label("Salary by Skill — Median (USD)")
