@@ -464,6 +464,43 @@ details summary {
     font-size: 12px !important;
 }
 
+/* ── Expander content (Job Explorer description) — fix invisible text ──
+   Plain st.markdown() inside st.expander() was inheriting Streamlit's
+   default theme text color, which was nearly invisible against the
+   white card surface. Scope explicit colors to expander body content. */
+[data-testid="stExpander"] [data-testid="stExpanderDetails"] {
+    background: #ffffff;
+}
+[data-testid="stExpander"] [data-testid="stExpanderDetails"] p,
+[data-testid="stExpander"] [data-testid="stExpanderDetails"] span,
+[data-testid="stExpander"] [data-testid="stExpanderDetails"] div {
+    color: #1f2937 !important;
+}
+[data-testid="stExpander"] [data-testid="stExpanderDetails"] h1,
+[data-testid="stExpander"] [data-testid="stExpanderDetails"] h2,
+[data-testid="stExpander"] [data-testid="stExpanderDetails"] h3,
+[data-testid="stExpander"] [data-testid="stExpanderDetails"] h4,
+[data-testid="stExpander"] [data-testid="stExpanderDetails"] h5,
+[data-testid="stExpander"] [data-testid="stExpanderDetails"] h6 {
+    color: #111827 !important;
+}
+[data-testid="stExpander"] [data-testid="stExpanderDetails"] a {
+    color: #059669 !important;
+    text-decoration: underline;
+}
+[data-testid="stExpander"] [data-testid="stExpanderDetails"] li,
+[data-testid="stExpander"] [data-testid="stExpanderDetails"] ul,
+[data-testid="stExpander"] [data-testid="stExpanderDetails"] ol {
+    color: #374151 !important;
+}
+/* Expander header/title text and toggle icon */
+[data-testid="stExpander"] summary {
+    color: #111827 !important;
+}
+[data-testid="stExpander"] summary svg {
+    fill: #059669 !important;
+}
+
 /* Sidebar divider hr */
 [data-testid="stSidebar"] hr {
     border-color: #1e3a2e !important;
@@ -496,31 +533,20 @@ details summary {
     background: #f0fdf9 !important;
 }
 
-/* ── Radio buttons in sidebar ── */
-[data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] label {
-    padding: 9px 12px !important;
+/* ── Radio buttons in sidebar — safe styling only ── */
+[data-testid="stSidebar"] [data-testid="stRadio"] label {
+    padding: 8px 12px !important;
     border-radius: 8px !important;
     margin: 2px 0 !important;
-    transition: background 0.15s, color 0.15s;
     cursor: pointer;
-    border-left: 3px solid transparent;
+    color: #a0bfb0 !important;
+    font-size: 14px !important;
 }
-[data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] label:hover {
-    background: rgba(16,185,129,0.12) !important;
-    border-left-color: rgba(16,185,129,0.4) !important;
+[data-testid="stSidebar"] [data-testid="stRadio"] p {
+    color: #a0bfb0 !important;
+    font-size: 14px !important;
+    font-weight: 500 !important;
 }
-/* Selected nav item: solid green left bar + tinted background */
-[data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] label:has(input:checked) {
-    background: rgba(16,185,129,0.18) !important;
-    border-left: 3px solid #10b981 !important;
-}
-[data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] label:has(input:checked) p {
-    color: #ecfdf5 !important;
-    font-weight: 600 !important;
-}
-/* Hide the radio dot — we use the left bar as the selection indicator */
-[data-testid="stSidebar"] [data-testid="stRadio"] [data-testid="stMarkdownContainer"] + div,
-[data-testid="stSidebar"] input[type="radio"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1220,6 +1246,149 @@ def _page_jobs(ctx: dict) -> None:
             _render_job_card(job)
 
 
+def _clean_description_html(raw_html: str) -> str:
+    """
+    Strips all HTML tags from a job description and returns clean plain text.
+
+    Uses BeautifulSoup when available (preferred).
+    Falls back to Python's built-in HTMLParser so the function never raises
+    and never returns raw HTML tags under any circumstances.
+
+    Output guarantees:
+        - Zero HTML tags in the returned string
+        - Headings/paragraphs separated by blank lines
+        - <li> items prefixed with "• "
+        - HTML entities decoded (&nbsp; → space, &amp; → &, etc.)
+        - URLs in <a> tags kept as readable text (not Markdown — avoids any
+          risk of Markdown syntax characters causing st.text() display issues)
+    """
+    if not raw_html or not raw_html.strip():
+        return ""
+
+    lines: list[str] = []
+
+    # ── BeautifulSoup path ────────────────────────────────────────────────
+    try:
+        from bs4 import BeautifulSoup, NavigableString, Tag  # type: ignore
+
+        BLOCKS = {"p", "div", "section", "article",
+                  "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol"}
+
+        def _inline_text(node) -> str:
+            """Recursively extract text from inline nodes. No markup emitted."""
+            if isinstance(node, NavigableString):
+                return str(node)
+            if not isinstance(node, Tag):
+                return ""
+            if node.name == "br":
+                return "\n"
+            # For links, show "text (url)" so the URL stays readable as plain text
+            if node.name == "a":
+                inner = "".join(_inline_text(c) for c in node.children).strip()
+                href = (node.get("href") or "").strip()
+                if href and href not in inner:
+                    return f"{inner} ({href})" if inner else href
+                return inner or href
+            return "".join(_inline_text(c) for c in node.children)
+
+        def _walk(node) -> None:
+            if isinstance(node, NavigableString):
+                t = str(node)
+                # Skip pure-whitespace text nodes between block tags
+                if t.strip():
+                    lines.append(t.strip())
+                return
+            if not isinstance(node, Tag):
+                return
+
+            name = node.name
+
+            if name == "br":
+                lines.append("")
+                return
+
+            if name == "li":
+                t = _inline_text(node).strip()
+                if t:
+                    lines.append(f"• {t}")
+                return
+
+            if name in BLOCKS:
+                if name in ("ul", "ol"):
+                    for child in node.children:
+                        _walk(child)
+                    lines.append("")          # blank line after the list
+                    return
+                # Heading or paragraph: extract as one line, add blank line after
+                t = _inline_text(node).strip()
+                if t:
+                    lines.append(t)
+                    lines.append("")
+                return
+
+            # Any other tag (span, strong, em, table, td, …): recurse into children
+            for child in node.children:
+                _walk(child)
+
+        soup = BeautifulSoup(raw_html, "html.parser")
+        _walk(soup)
+
+    # ── stdlib fallback (HTMLParser) — guaranteed zero-dependency path ────
+    except Exception:
+        from html.parser import HTMLParser as _HP
+        import html as _he
+
+        class _Extractor(_HP):
+            def __init__(self):
+                super().__init__(convert_charrefs=True)  # auto-decodes entities
+                self._lines: list[str] = []
+                self._buf: list[str] = []
+
+            def _flush(self):
+                t = "".join(self._buf).strip()
+                if t:
+                    self._lines.append(t)
+                self._buf = []
+
+            def handle_starttag(self, tag, attrs):
+                if tag in ("br",):
+                    self._flush()
+                    self._lines.append("")
+                elif tag == "li":
+                    self._flush()
+                    self._buf.append("• ")
+                elif tag in ("p", "div", "h1", "h2", "h3", "h4", "h5", "h6",
+                             "ul", "ol", "section", "article"):
+                    self._flush()
+                    self._lines.append("")
+
+            def handle_endtag(self, tag):
+                if tag in ("p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6",
+                           "ul", "ol", "section", "article"):
+                    self._flush()
+                    self._lines.append("")
+
+            def handle_data(self, data):
+                self._buf.append(data)
+
+        ex = _Extractor()
+        ex.feed(raw_html)
+        ex._flush()
+        lines.extend(ex._lines)
+
+    # ── Normalise blank lines (collapse runs of 2+ blanks to one) ────────
+    result: list[str] = []
+    prev_blank = False
+    for line in lines:
+        is_blank = (line.strip() == "")
+        if is_blank and prev_blank:
+            continue
+        result.append(line)
+        prev_blank = is_blank
+
+    return "\n".join(result).strip()
+
+
 def _render_job_card(job: dict) -> None:
     """Renders a styled detail card for one job."""
     utils.card_html(
@@ -1253,9 +1422,11 @@ def _render_job_card(job: dict) -> None:
         with st.spinner("Fetching…"):
             full = api.get_job_detail(job["id"])
         if full and full.get("description"):
-            desc = full["description"][:2500].replace("\n", "  \n")
+            clean_text = _clean_description_html(full["description"][:8000])
             with st.expander("Description", expanded=True):
-                st.markdown(desc)
+                # st.text() renders plain text ONLY — it is physically incapable
+                # of rendering HTML or Markdown, so no tags can ever show through.
+                st.text(clean_text[:3000])
         else:
             st.markdown('<p style="color:#6b7f78;font-size:13px;padding:6px 0">No description available for this job.</p>', unsafe_allow_html=True)
 

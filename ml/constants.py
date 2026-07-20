@@ -413,3 +413,39 @@ USD_CONVERSION_RATES: dict[str, float] = {
 # ============================================================================
 SKILL_EXTRACTION_BATCH_SIZE: int = 50   # Jobs per extraction batch
 TREND_COMPUTATION_BATCH_SIZE: int = 500  # Jobs loaded per trend computation pass
+# ============================================================================
+# GREENHOUSE COMPANY SLUGS
+# Board tokens for the Greenhouse public board API.
+# Each slug maps to: https://boards-api.greenhouse.io/v1/boards/{slug}/jobs
+# Verify any slug at: https://boards.greenhouse.io/{slug}
+# ============================================================================
+GREENHOUSE_COMPANIES: list[str] = [
+    "airbnb",
+    "canva",
+    "coinbase",
+    "datadog",
+    "discord",
+    "dropbox",
+    "figma",
+    "gitlab",
+    "hashicorp",
+    "hubspot",
+    "linear",
+    "mongodb",
+    "notion",
+    "plaid",
+    "postman",
+    "reddit",
+    "rippling",
+    "robinhood",
+    "shopify",
+    "singlestore",
+    "snowflake",
+    "sourcegraph",
+    "square",
+    "stripe",
+    "twilio",
+    "vercel",
+    "webflow",
+    "zapier",
+]

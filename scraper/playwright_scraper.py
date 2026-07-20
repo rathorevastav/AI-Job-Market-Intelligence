@@ -206,20 +206,93 @@ def _fetch_api(url: str = API_URL) -> list[dict]:
 
 def _strip_html(text: str) -> str:
     """
-    Removes HTML markup and collapses whitespace to plain text.
+    Converts HTML markup to clean plain text using BeautifulSoup.
 
-    RemoteOK descriptions often contain raw HTML (p, ul, li, br, strong).
-    Plain text is stored for NLP skill extraction by the ML pipeline.
+    Greenhouse job descriptions contain deeply nested HTML that regex
+    stripping cannot handle reliably. BeautifulSoup parses the full
+    DOM tree so every tag is removed regardless of nesting depth.
+
+    Conversion rules:
+        <br>           → newline
+        <li>           → "• " bullet prefix on its own line
+        <p>, <div>,
+        <h1>–<h6>     → text content followed by a blank line
+        <ul>, <ol>     → blank line after the list
+        All other tags → text content only (no tag emitted)
+        HTML entities  → decoded automatically by bs4 (html.parser)
     """
-    if not text:
+    if not text or not text.strip():
         return ""
-    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"</p>|</li>|</div>|</h\d>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
 
+    try:
+        from bs4 import BeautifulSoup, NavigableString, Tag
+
+        BLOCKS = {"p", "div", "section", "article",
+                  "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol"}
+        lines: list[str] = []
+
+        def _inline(node) -> str:
+            if isinstance(node, NavigableString):
+                return str(node)
+            if not isinstance(node, Tag):
+                return ""
+            if node.name == "br":
+                return "\n"
+            return "".join(_inline(c) for c in node.children)
+
+        def _walk(node) -> None:
+            if isinstance(node, NavigableString):
+                t = str(node)
+                if t.strip():
+                    lines.append(t.strip())
+                return
+            if not isinstance(node, Tag):
+                return
+            n = node.name
+            if n == "br":
+                lines.append("")
+                return
+            if n == "li":
+                t = _inline(node).strip()
+                if t:
+                    lines.append(f"• {t}")
+                return
+            if n in BLOCKS:
+                if n in ("ul", "ol"):
+                    for c in node.children:
+                        _walk(c)
+                    lines.append("")
+                    return
+                t = _inline(node).strip()
+                if t:
+                    lines.append(t)
+                    lines.append("")
+                return
+            for c in node.children:
+                _walk(c)
+
+        _walk(BeautifulSoup(text, "html.parser"))
+
+        result: list[str] = []
+        prev_blank = False
+        for line in lines:
+            blank = line.strip() == ""
+            if blank and prev_blank:
+                continue
+            result.append(line)
+            prev_blank = blank
+
+        return "\n".join(result).strip()
+
+    except Exception:
+        # bs4 unavailable or parse error — fall back to safe regex strip
+        import re as _re
+        t = _re.sub(r"<br\s*/?>", "\n", text, flags=_re.IGNORECASE)
+        t = _re.sub(r"</?(li)[^>]*>", "\n• ", t, flags=_re.IGNORECASE)
+        t = _re.sub(r"<[^>]+>", " ", t)
+        t = _re.sub(r"[ \t]+", " ", t)
+        t = _re.sub(r"\n{3,}", "\n\n", t)
+        return t.strip()
 
 def _strip_spam_footer(text: str) -> str:
     """

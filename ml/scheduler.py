@@ -4,10 +4,11 @@ ml/scheduler.py
 Pipeline orchestrator for the ML analytics layer.
 
 PIPELINE ORDER:
-    1. Scraper          (optional — can run independently)
-    2. Skill Extraction — processes all pending jobs
-    3. Trend Analysis   — computes monthly skill demand trends
-    4. Salary Analysis  — aggregates salary statistics
+    1a. RemoteOK Scraper   (optional)
+    1b. Greenhouse Scraper (optional)
+    2.  Skill Extraction   — processes all pending jobs
+    3.  Trend Analysis     — computes monthly skill demand trends
+    4.  Salary Analysis    — aggregates salary statistics
 
 FAILURE ISOLATION:
     Each stage runs independently. A failure in stage N does NOT prevent
@@ -16,13 +17,19 @@ FAILURE ISOLATION:
     all trend data from being updated.
 
 HOW TO RUN:
-    # Full pipeline:
+    # Full pipeline (both scrapers + all analytics):
     python -m ml.scheduler
 
-    # Skip scraping (just run analytics on existing data):
-    python -m ml.scheduler --skip-scraper
+    # Skip scraping (run analytics on existing data):
+    python -m ml.scheduler --skip-scraper --skip-greenhouse
 
-    # Run skill extraction only:
+    # Greenhouse only:
+    python -m ml.scheduler --only-greenhouse
+
+    # Specific Greenhouse boards:
+    python -m ml.scheduler --only-greenhouse --greenhouse-companies stripe airbnb linear
+
+    # Skill extraction only:
     python -m ml.scheduler --only-skills
 
     # Trend analysis for last 6 months with country breakdown:
@@ -34,7 +41,6 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-import time
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -116,9 +122,6 @@ def _run_stage(name: str, func, **kwargs) -> StageResult:
         - The exception is logged with a full traceback
         - A failed StageResult is returned
         - Execution continues to the next stage (failure isolation)
-
-    This means the pipeline never crashes hard — it always completes
-    and produces a full summary of what succeeded and what failed.
     """
     result = StageResult(stage=name, status="running", started_at=utcnow())
     logger.info("━━━ Starting stage: %s ━━━", name.upper())
@@ -144,6 +147,15 @@ def _stage_scraper(max_jobs: int = 200) -> dict:
     """Runs the RemoteOK API scraper."""
     from scraper.playwright_scraper import scrape_remoteok
     return scrape_remoteok(max_jobs=max_jobs)
+
+
+def _stage_greenhouse(
+    max_jobs: int = 5000,
+    companies: Optional[list[str]] = None,
+) -> dict:
+    """Runs the Greenhouse Board API scraper across all configured company boards."""
+    from scraper.greenhouse_scraper import scrape_greenhouse
+    return scrape_greenhouse(max_jobs=max_jobs, companies=companies)
 
 
 def _stage_skill_extraction(
@@ -178,7 +190,6 @@ def _stage_salary_analysis() -> dict:
     """Runs salary aggregation and returns a summary report."""
     from ml.salary_analyzer import run_salary_analysis
     report = run_salary_analysis()
-    # Return a flat stats dict for the pipeline summary
     return {
         "jobs_analysed":    report.get("total_jobs_with_salary", 0),
         "skills_ranked":    len(report.get("by_skill", [])),
@@ -192,30 +203,30 @@ def _stage_salary_analysis() -> dict:
 
 @timed
 def run_pipeline(
-    skip_scraper:     bool = False,
-    skip_skills:      bool = False,
-    skip_trends:      bool = False,
-    skip_salary:      bool = False,
-    scraper_max_jobs: int = 200,
-    skill_batch_size: int = 50,
-    skill_max_batches: Optional[int] = None,
-    months_back:      int = 3,
-    top_countries:    Optional[list[str]] = None,
-    min_job_count:    int = 3,
-    min_confidence:   float = 0.5,
+    skip_scraper:         bool = False,
+    skip_greenhouse:      bool = False,
+    skip_skills:          bool = False,
+    skip_trends:          bool = False,
+    skip_salary:          bool = False,
+    scraper_max_jobs:     int = 200,
+    greenhouse_max_jobs:  int = 5000,
+    greenhouse_companies: Optional[list[str]] = None,
+    skill_batch_size:     int = 50,
+    skill_max_batches:    Optional[int] = None,
+    months_back:          int = 3,
+    top_countries:        Optional[list[str]] = None,
+    min_job_count:        int = 3,
+    min_confidence:       float = 0.5,
 ) -> dict:
     """
     Runs the complete analytics pipeline with failure isolation.
 
     RETRY SAFETY:
         The pipeline is fully idempotent:
-        - Scraper uses ON CONFLICT DO NOTHING — duplicates are skipped
+        - Both scrapers use ON CONFLICT DO NOTHING — duplicates are skipped
         - Skill extraction only processes is_skills_extracted=False jobs
         - Trend analysis uses ON CONFLICT DO UPDATE — safe to re-run
         - Salary analysis is read-only — no DB writes
-
-        You can run this pipeline multiple times safely. Only new data
-        is processed. Already-processed data is updated with fresh values.
 
     Returns:
         Full pipeline summary dict for logging and monitoring.
@@ -226,11 +237,23 @@ def run_pipeline(
     logger.info("  Started at: %s", run.started_at.strftime("%Y-%m-%d %H:%M:%S UTC"))
     logger.info("=" * 60)
 
-    # ── Stage 1: Scraper ─────────────────────────────────────────────────
+    # ── Stage 1a: RemoteOK Scraper ───────────────────────────────────────
     if skip_scraper:
-        run.add(StageResult(stage="scraper", status="skipped", stats={"reason": "skip_scraper=True"}))
+        run.add(StageResult(stage="scraper_remoteok", status="skipped", stats={"reason": "skip_scraper=True"}))
     else:
-        result = _run_stage("scraper", _stage_scraper, max_jobs=scraper_max_jobs)
+        result = _run_stage("scraper_remoteok", _stage_scraper, max_jobs=scraper_max_jobs)
+        run.add(result)
+
+    # ── Stage 1b: Greenhouse Scraper ─────────────────────────────────────
+    if skip_greenhouse:
+        run.add(StageResult(stage="scraper_greenhouse", status="skipped", stats={"reason": "skip_greenhouse=True"}))
+    else:
+        result = _run_stage(
+            "scraper_greenhouse",
+            _stage_greenhouse,
+            max_jobs=greenhouse_max_jobs,
+            companies=greenhouse_companies,
+        )
         run.add(result)
 
     # ── Stage 2: Skill Extraction ─────────────────────────────────────────
@@ -295,26 +318,31 @@ def _parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     # Skip flags
-    parser.add_argument("--skip-scraper",  action="store_true", help="Skip scraper stage")
-    parser.add_argument("--skip-skills",   action="store_true", help="Skip skill extraction stage")
-    parser.add_argument("--skip-trends",   action="store_true", help="Skip trend analysis stage")
-    parser.add_argument("--skip-salary",   action="store_true", help="Skip salary analysis stage")
+    parser.add_argument("--skip-scraper",    action="store_true", help="Skip RemoteOK scraper")
+    parser.add_argument("--skip-greenhouse", action="store_true", help="Skip Greenhouse scraper")
+    parser.add_argument("--skip-skills",     action="store_true", help="Skip skill extraction stage")
+    parser.add_argument("--skip-trends",     action="store_true", help="Skip trend analysis stage")
+    parser.add_argument("--skip-salary",     action="store_true", help="Skip salary analysis stage")
 
-    # Only flags (shorthand for running one stage)
-    parser.add_argument("--only-scraper", action="store_true")
-    parser.add_argument("--only-skills",  action="store_true")
-    parser.add_argument("--only-trends",  action="store_true")
-    parser.add_argument("--only-salary",  action="store_true")
+    # Only flags
+    parser.add_argument("--only-scraper",    action="store_true", help="Run RemoteOK scraper only")
+    parser.add_argument("--only-greenhouse", action="store_true", help="Run Greenhouse scraper only")
+    parser.add_argument("--only-skills",     action="store_true")
+    parser.add_argument("--only-trends",     action="store_true")
+    parser.add_argument("--only-salary",     action="store_true")
 
     # Stage parameters
-    parser.add_argument("--scraper-max-jobs",    type=int, default=200)
-    parser.add_argument("--skill-batch-size",    type=int, default=50)
-    parser.add_argument("--skill-max-batches",   type=int, default=None)
-    parser.add_argument("--min-confidence",      type=float, default=0.5)
-    parser.add_argument("--months-back",         type=int, default=3)
-    parser.add_argument("--countries", nargs="*", default=None,
+    parser.add_argument("--scraper-max-jobs",      type=int,   default=200)
+    parser.add_argument("--greenhouse-max-jobs",   type=int,   default=5000)
+    parser.add_argument("--greenhouse-companies",  nargs="*",  default=None,
+                        help="Greenhouse board slugs. e.g. stripe airbnb linear")
+    parser.add_argument("--skill-batch-size",      type=int,   default=50)
+    parser.add_argument("--skill-max-batches",     type=int,   default=None)
+    parser.add_argument("--min-confidence",        type=float, default=0.5)
+    parser.add_argument("--months-back",           type=int,   default=3)
+    parser.add_argument("--countries", nargs="*",  default=None,
                         help="Country codes for per-country trend analysis. e.g. US IN GB")
-    parser.add_argument("--min-job-count",       type=int, default=3)
+    parser.add_argument("--min-job-count",         type=int,   default=3)
 
     return parser.parse_args()
 
@@ -331,28 +359,32 @@ if __name__ == "__main__":
 
     # Handle --only-X flags (run nothing except the specified stage)
     if args.only_scraper:
-        args.skip_skills = args.skip_trends = args.skip_salary = True
+        args.skip_greenhouse = args.skip_skills = args.skip_trends = args.skip_salary = True
+    elif args.only_greenhouse:
+        args.skip_scraper = args.skip_skills = args.skip_trends = args.skip_salary = True
     elif args.only_skills:
-        args.skip_scraper = args.skip_trends = args.skip_salary = True
+        args.skip_scraper = args.skip_greenhouse = args.skip_trends = args.skip_salary = True
     elif args.only_trends:
-        args.skip_scraper = args.skip_skills = args.skip_salary = True
+        args.skip_scraper = args.skip_greenhouse = args.skip_skills = args.skip_salary = True
     elif args.only_salary:
-        args.skip_scraper = args.skip_skills = args.skip_trends = True
+        args.skip_scraper = args.skip_greenhouse = args.skip_skills = args.skip_trends = True
 
     summary = run_pipeline(
-        skip_scraper=     args.skip_scraper,
-        skip_skills=      args.skip_skills,
-        skip_trends=      args.skip_trends,
-        skip_salary=      args.skip_salary,
-        scraper_max_jobs= args.scraper_max_jobs,
-        skill_batch_size= args.skill_batch_size,
-        skill_max_batches=args.skill_max_batches,
-        months_back=      args.months_back,
-        top_countries=    args.countries,
-        min_job_count=    args.min_job_count,
-        min_confidence=   args.min_confidence,
+        skip_scraper=         args.skip_scraper,
+        skip_greenhouse=      args.skip_greenhouse,
+        skip_skills=          args.skip_skills,
+        skip_trends=          args.skip_trends,
+        skip_salary=          args.skip_salary,
+        scraper_max_jobs=     args.scraper_max_jobs,
+        greenhouse_max_jobs=  args.greenhouse_max_jobs,
+        greenhouse_companies= args.greenhouse_companies,
+        skill_batch_size=     args.skill_batch_size,
+        skill_max_batches=    args.skill_max_batches,
+        months_back=          args.months_back,
+        top_countries=        args.countries,
+        min_job_count=        args.min_job_count,
+        min_confidence=       args.min_confidence,
     )
 
-    # Exit with non-zero code if any stage failed (for CI/CD and alerting)
     if summary["stages_failed"] > 0:
         sys.exit(1)
