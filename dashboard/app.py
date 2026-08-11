@@ -615,6 +615,25 @@ def _load_jobs(
     )
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _load_jobs_with_salary(
+    country:      Optional[str],
+    posted_after: Optional[str],
+    page:         int,
+    page_size:    int,
+) -> dict:
+    """
+    Calls GET /jobs/with-salary — returns only jobs with salary_min or salary_max set.
+    All arguments are hashable so @st.cache_data can build a deterministic key.
+    """
+    return api.get_jobs_with_salary(
+        country=country,
+        posted_after=posted_after,
+        page=page,
+        page_size=page_size,
+    )
+
+
 # ============================================================================
 # SIDEBAR
 # ============================================================================
@@ -799,13 +818,13 @@ def _page_overview(ctx: dict) -> None:
     except Exception as e:
         st.caption(f"Metrics unavailable: {e}")
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div style="height:16px"></div>', unsafe_allow_html=True)
 
     # ── Left column: skills or job title fallback ─────────────────────
     left, right = st.columns([3, 2])
 
     with left:
-        _section_label("Top In-Demand Skills")
+        utils.section_header("Top In-Demand Skills")
         try:
             if skills:
                 fig = charts.bar_top_skills(skills, title="", max_skills=10)
@@ -837,7 +856,11 @@ def _page_overview(ctx: dict) -> None:
                     fig_t.update_xaxes(showgrid=False, zeroline=False, color="#9ca3af")
                     fig_t.update_yaxes(showgrid=False, zeroline=False, color="#374151")
                     st.plotly_chart(fig_t, use_container_width=True)
-                    st.caption("Top job titles — run `python -m ml.scheduler --only-skills` for skill analytics")
+                    st.markdown(
+                        '<p style="color:#6b7f78;font-size:13px;margin:4px 0 0 2px">'
+                        'Top job titles — run <code>python -m ml.scheduler --only-skills</code> for skill analytics</p>',
+                        unsafe_allow_html=True,
+                    )
                 else:
                     _empty_card("No job titles in current view")
             else:
@@ -847,7 +870,7 @@ def _page_overview(ctx: dict) -> None:
 
     # ── Right column: top companies ───────────────────────────────────
     with right:
-        _section_label("Top Hiring Companies")
+        utils.section_header("Top Hiring Companies")
         try:
             if recent_jobs:
                 co_counts = Counter(
@@ -886,10 +909,10 @@ def _page_overview(ctx: dict) -> None:
         except Exception:
             _empty_card("Companies chart unavailable")
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div style="height:16px"></div>', unsafe_allow_html=True)
 
     # ── Audit table ───────────────────────────────────────────────────
-    _section_label("Scraper Audit Log")
+    utils.section_header("Scraper Audit Log")
     try:
         if scrape_runs:
             df_runs = utils.scrape_runs_to_dataframe(scrape_runs)
@@ -960,7 +983,7 @@ def _page_skills(ctx: dict) -> None:
         use_container_width=True,
     )
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div style="height:16px"></div>', unsafe_allow_html=True)
 
     tab_table, tab_pie = st.tabs(["  📋  Table  ", "  🥧  Distribution  "])
 
@@ -1007,26 +1030,17 @@ def _page_salary(ctx: dict) -> None:
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("""
-    <div style="background:#f0fdf9;border:1px solid #6ee7b7;border-left:4px solid #10b981;
-                border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#065f46">
-        ℹ️ Salary data comes from postings that disclose compensation (~15–25% on RemoteOK).
-        Run <code style="background:#d1fae5;padding:1px 5px;border-radius:4px">
-        python -m ml.scheduler --only-salary</code> to refresh aggregations.
-    </div>
-    """, unsafe_allow_html=True)
 
-    # Fetch a page of jobs with salary — explicit params for cache safety
-    result = _load_jobs(
-        skill=None, country=ctx["country"], city=None,
-        company_name=None, experience_level=None, job_type=None,
-        is_remote=None, source_platform=None, search_query=None,
-        posted_after=ctx["posted_after"], posted_before=None,
-        page=1, page_size=100, order_by="posted_at", descending=True,
+    # Fetch jobs via the dedicated endpoint — returns only jobs with disclosed salary
+    result = _load_jobs_with_salary(
+        country=ctx["country"],
+        posted_after=ctx["posted_after"],
+        page=1,
+        page_size=100,
     )
 
     all_jobs = result.get("items", []) if result else []
-    jobs_with_salary = [j for j in all_jobs if j.get("salary_min") or j.get("salary_max")]
+    jobs_with_salary = all_jobs  # endpoint already filters for salary_min/max IS NOT NULL
 
     if not jobs_with_salary:
         _empty_card(
@@ -1037,22 +1051,22 @@ def _page_salary(ctx: dict) -> None:
 
     st.markdown(
         f'<div style="display:inline-block;background:#ecfdf5;border:1px solid #6ee7b7;'
-        f'border-radius:20px;padding:4px 14px;font-size:13px;color:#065f46;font-weight:600;margin-bottom:16px">'
+        f'border-radius:20px;padding:4px 14px;font-size:13px;color:#065f46;font-weight:600;margin:0 0 24px">'
         f'✓ {len(jobs_with_salary)} jobs with disclosed salary in current view</div>',
         unsafe_allow_html=True,
     )
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div style="height:16px"></div>', unsafe_allow_html=True)
 
     salary_by_skill = utils.build_salary_by_skill(jobs_with_salary)
 
     chart_col, table_col = st.columns([3, 2])
 
     with chart_col:
-        _section_label("Salary by Skill — Median (USD)")
+        utils.section_header("Salary by Skill — Median (USD)")
         st.plotly_chart(charts.bar_salary_by_skill(salary_by_skill[:15]), use_container_width=True)
 
     with table_col:
-        _section_label("Top 10 Compensation Table")
+        utils.section_header("Top 10 Compensation Table")
         if salary_by_skill:
             import pandas as pd
             df_sal = pd.DataFrame(salary_by_skill[:10])[["skill", "median_usd", "sample_size"]]
@@ -1062,11 +1076,15 @@ def _page_salary(ctx: dict) -> None:
         else:
             st.markdown('<p style="color:#6b7f78;font-size:13px;padding:8px 0">No salary data for skills in current view.</p>', unsafe_allow_html=True)
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    _section_label("Remote vs On-site Compensation")
+    st.markdown('<div style="height:16px"></div>', unsafe_allow_html=True)
+    utils.section_header("Remote vs On-site Compensation")
+
+    from ml.constants import USD_CONVERSION_RATES
 
     def _mid(j):
         lo, hi = j.get("salary_min") or 0, j.get("salary_max") or 0
+        rate = USD_CONVERSION_RATES.get((j.get("salary_currency") or "USD").upper(), 1.0)
+        lo, hi = lo * rate, hi * rate
         return (lo + hi) / 2 if lo and hi else lo or hi
 
     remote_mids = [_mid(j) for j in jobs_with_salary if j.get("is_remote") and _mid(j) > 0]
@@ -1089,11 +1107,11 @@ def _page_salary(ctx: dict) -> None:
             utils.metric_card("Remote Premium", "—")
         st.caption("vs on-site median")
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div style="height:16px"></div>', unsafe_allow_html=True)
     all_mids = [_mid(j) for j in jobs_with_salary if _mid(j) > 0]
     if all_mids:
         import pandas as pd
-        _section_label("Salary Distribution")
+        utils.section_header("Salary Distribution")
         fig_hist = px.histogram(
             x=all_mids, nbins=20,
             labels={"x": "Annual Salary (USD)"},
@@ -1128,12 +1146,16 @@ def _page_jobs(ctx: dict) -> None:
     # ── Filter row ────────────────────────────────────────────────────
     f1, f2, f3, f4 = st.columns(4)
     with f1:
+        st.caption("Keyword")
         search  = st.text_input("Search title/keyword", placeholder="machine learning", label_visibility="collapsed")
     with f2:
+        st.caption("Skill")
         skill_f = st.text_input("Skill filter", placeholder="python", label_visibility="collapsed")
     with f3:
+        st.caption("Company")
         company_f = st.text_input("Company", placeholder="stripe", label_visibility="collapsed")
     with f4:
+        st.caption("Work Type")
         remote_map = {"All": None, "Remote": True, "On-site": False}
         r_sel = st.selectbox("Work type", list(remote_map.keys()), label_visibility="collapsed")
         is_remote = remote_map[r_sel]
@@ -1229,8 +1251,8 @@ def _page_jobs(ctx: dict) -> None:
         page_size=page_size, key_prefix="jobs",
     )
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    _section_label("Job Detail")
+    st.markdown('<div style="height:16px"></div>', unsafe_allow_html=True)
+    utils.section_header("Job Detail")
 
     job_options = ["— select a job —"] + [
         f"[{j['id']}] {j.get('title','?')} — {j.get('company_name') or 'Unknown'}"
@@ -1245,146 +1267,82 @@ def _page_jobs(ctx: dict) -> None:
         if job:
             _render_job_card(job)
 
-
-def _clean_description_html(raw_html: str) -> str:
+def _clean_desc(raw: str) -> str:
     """
-    Strips all HTML tags from a job description and returns clean plain text.
-
-    Uses BeautifulSoup when available (preferred).
-    Falls back to Python's built-in HTMLParser so the function never raises
-    and never returns raw HTML tags under any circumstances.
-
-    Output guarantees:
-        - Zero HTML tags in the returned string
-        - Headings/paragraphs separated by blank lines
-        - <li> items prefixed with "• "
-        - HTML entities decoded (&nbsp; → space, &amp; → &, etc.)
-        - URLs in <a> tags kept as readable text (not Markdown — avoids any
-          risk of Markdown syntax characters causing st.text() display issues)
+    Strips HTML tags from a job description and returns clean plain text.
+    Uses BeautifulSoup when available; falls back to a safe stdlib approach.
+    Preserves paragraph breaks and converts <li> to bullet points.
     """
-    if not raw_html or not raw_html.strip():
+    if not raw or not raw.strip():
         return ""
-
-    lines: list[str] = []
-
-    # ── BeautifulSoup path ────────────────────────────────────────────────
     try:
-        from bs4 import BeautifulSoup, NavigableString, Tag  # type: ignore
+        from bs4 import BeautifulSoup, NavigableString, Tag
+        BLOCKS = {"p","div","section","article","h1","h2","h3","h4","h5","h6","ul","ol"}
+        lines: list[str] = []
 
-        BLOCKS = {"p", "div", "section", "article",
-                  "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol"}
-
-        def _inline_text(node) -> str:
-            """Recursively extract text from inline nodes. No markup emitted."""
-            if isinstance(node, NavigableString):
-                return str(node)
-            if not isinstance(node, Tag):
-                return ""
-            if node.name == "br":
-                return "\n"
-            # For links, show "text (url)" so the URL stays readable as plain text
-            if node.name == "a":
-                inner = "".join(_inline_text(c) for c in node.children).strip()
-                href = (node.get("href") or "").strip()
-                if href and href not in inner:
-                    return f"{inner} ({href})" if inner else href
-                return inner or href
-            return "".join(_inline_text(c) for c in node.children)
+        def _inline(node) -> str:
+            if isinstance(node, NavigableString): return str(node)
+            if not isinstance(node, Tag):         return ""
+            if node.name == "br":                 return "\n"
+            return "".join(_inline(c) for c in node.children)
 
         def _walk(node) -> None:
             if isinstance(node, NavigableString):
-                t = str(node)
-                # Skip pure-whitespace text nodes between block tags
-                if t.strip():
-                    lines.append(t.strip())
+                t = str(node).strip()
+                if t: lines.append(t)
                 return
-            if not isinstance(node, Tag):
+            if not isinstance(node, Tag): return
+            n = node.name
+            if n == "br":
+                lines.append(""); return
+            if n == "li":
+                t = _inline(node).strip()
+                if t: lines.append(f"• {t}")
                 return
-
-            name = node.name
-
-            if name == "br":
-                lines.append("")
+            if n in BLOCKS:
+                if n in ("ul", "ol"):
+                    for c in node.children: _walk(c)
+                    lines.append(""); return
+                t = _inline(node).strip()
+                if t: lines.append(t); lines.append("")
                 return
+            for c in node.children: _walk(c)
 
-            if name == "li":
-                t = _inline_text(node).strip()
-                if t:
-                    lines.append(f"• {t}")
-                return
+        _walk(BeautifulSoup(raw, "html.parser"))
 
-            if name in BLOCKS:
-                if name in ("ul", "ol"):
-                    for child in node.children:
-                        _walk(child)
-                    lines.append("")          # blank line after the list
-                    return
-                # Heading or paragraph: extract as one line, add blank line after
-                t = _inline_text(node).strip()
-                if t:
-                    lines.append(t)
-                    lines.append("")
-                return
-
-            # Any other tag (span, strong, em, table, td, …): recurse into children
-            for child in node.children:
-                _walk(child)
-
-        soup = BeautifulSoup(raw_html, "html.parser")
-        _walk(soup)
-
-    # ── stdlib fallback (HTMLParser) — guaranteed zero-dependency path ────
-    except Exception:
-        from html.parser import HTMLParser as _HP
-        import html as _he
-
-        class _Extractor(_HP):
+    except ImportError:
+        # bs4 not installed — use stdlib HTMLParser
+        from html.parser import HTMLParser
+        class _P(HTMLParser):
             def __init__(self):
-                super().__init__(convert_charrefs=True)  # auto-decodes entities
-                self._lines: list[str] = []
-                self._buf: list[str] = []
-
+                super().__init__(convert_charrefs=True)
+                self.out: list[str] = []
+                self.buf: list[str] = []
             def _flush(self):
-                t = "".join(self._buf).strip()
-                if t:
-                    self._lines.append(t)
-                self._buf = []
-
+                t = "".join(self.buf).strip()
+                if t: self.out.append(t)
+                self.buf = []
             def handle_starttag(self, tag, attrs):
-                if tag in ("br",):
-                    self._flush()
-                    self._lines.append("")
-                elif tag == "li":
-                    self._flush()
-                    self._buf.append("• ")
-                elif tag in ("p", "div", "h1", "h2", "h3", "h4", "h5", "h6",
-                             "ul", "ol", "section", "article"):
-                    self._flush()
-                    self._lines.append("")
-
+                if tag == "br": self._flush(); self.out.append("")
+                elif tag == "li": self._flush(); self.buf.append("• ")
+                elif tag in ("p","div","h1","h2","h3","h4","h5","h6","ul","ol"):
+                    self._flush(); self.out.append("")
             def handle_endtag(self, tag):
-                if tag in ("p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6",
-                           "ul", "ol", "section", "article"):
+                if tag in ("p","div","li","h1","h2","h3","h4","h5","h6","ul","ol"):
                     self._flush()
-                    self._lines.append("")
-
             def handle_data(self, data):
-                self._buf.append(data)
+                self.buf.append(data)
+        p = _P(); p.feed(raw); p._flush()
+        lines = p.out
 
-        ex = _Extractor()
-        ex.feed(raw_html)
-        ex._flush()
-        lines.extend(ex._lines)
-
-    # ── Normalise blank lines (collapse runs of 2+ blanks to one) ────────
+    # Collapse consecutive blank lines to one
     result: list[str] = []
     prev_blank = False
     for line in lines:
-        is_blank = (line.strip() == "")
-        if is_blank and prev_blank:
-            continue
+        blank = not line.strip()
+        if blank and prev_blank: continue
         result.append(line)
-        prev_blank = is_blank
+        prev_blank = blank
 
     return "\n".join(result).strip()
 
@@ -1422,11 +1380,9 @@ def _render_job_card(job: dict) -> None:
         with st.spinner("Fetching…"):
             full = api.get_job_detail(job["id"])
         if full and full.get("description"):
-            clean_text = _clean_description_html(full["description"][:8000])
+            desc = _clean_desc(full["description"])[:3000]
             with st.expander("Description", expanded=True):
-                # st.text() renders plain text ONLY — it is physically incapable
-                # of rendering HTML or Markdown, so no tags can ever show through.
-                st.text(clean_text[:3000])
+                st.text(desc)  
         else:
             st.markdown('<p style="color:#6b7f78;font-size:13px;padding:6px 0">No description available for this job.</p>', unsafe_allow_html=True)
 
@@ -1453,14 +1409,7 @@ def _empty_card(title: str, subtitle: str = "") -> None:
     )
 
 
-def _section_label(text: str) -> None:
-    """Renders a consistent section label in the new green/white theme."""
-    st.markdown(
-        f'<p style="color:#059669;font-size:11px;font-weight:700;letter-spacing:0.08em;'
-        f'text-transform:uppercase;margin:0 0 10px;border-left:3px solid #10b981;'
-        f'padding-left:8px">{text}</p>',
-        unsafe_allow_html=True,
-    )
+
 
 
 # ============================================================================

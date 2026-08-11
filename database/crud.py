@@ -324,6 +324,7 @@ def get_jobs(
     posted_after: Optional[datetime] = None,
     posted_before: Optional[datetime] = None,
     search_query: Optional[str] = None,
+    has_salary: bool = False,
     # --- Pagination ---
     page: int = 1,
     page_size: int = 20,
@@ -454,6 +455,13 @@ def get_jobs(
         # and_() combines conditions with SQL AND.
         if filters:
             query = query.filter(and_(*filters))
+        if has_salary:
+            query = query.filter(
+                or_(
+                    Job.salary_min.isnot(None),
+                    Job.salary_max.isnot(None),
+                )
+            )
 
         # COUNT QUERY: reuse the same filters, count only the PK column.
         # This is run BEFORE pagination (offset/limit) to get the total

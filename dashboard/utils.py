@@ -249,10 +249,10 @@ def skill_tags(skills: Optional[list[str]], max_show: int = 10) -> None:
         return
     displayed = skills[:max_show]
     badges = " ".join(
-        f'<span style="background:#1a3a5c;color:#60a5fa;'
+        f'<span style="background:#ecfdf5;color:#065f46;'
         f'padding:2px 10px;border-radius:99px;'
         f'font-size:11px;margin:2px;display:inline-block;'
-        f'border:1px solid #2563eb">{skill}</span>'
+        f'border:1px solid #6ee7b7">{skill}</span>'
         for skill in displayed
     )
     if len(skills) > max_show:
@@ -262,7 +262,7 @@ def skill_tags(skills: Optional[list[str]], max_show: int = 10) -> None:
 
 def section_header(title: str, subtitle: str = "") -> None:
     st.markdown(
-        f'<h2 style="margin-bottom:2px;color:#f1f5f9">{title}</h2>',
+        f'<h2 style="margin-bottom:2px;color:#0d1f17">{title}</h2>',
         unsafe_allow_html=True,
     )
     if subtitle:
@@ -271,16 +271,21 @@ def section_header(title: str, subtitle: str = "") -> None:
             unsafe_allow_html=True,
         )
     st.markdown(
-        '<hr style="border:none;border-top:1px solid #1e293b;margin:8px 0 20px 0">',
+        '<hr style="border:none;border-top:1px solid #e2ece8;margin:8px 0 20px 0">',
         unsafe_allow_html=True,
     )
 
 
 def card_html(content: str) -> None:
-    """Renders an HTML string inside a styled dark card."""
+    # Outer div fills the stMarkdownContainer wrapper with white so the
+    # dot-grid background cannot bleed through around the inner card.
     st.markdown(
-        f'<div style="background:#0f172a;border:1px solid #1e293b;'
-        f'border-radius:12px;padding:20px;margin-bottom:12px">'
-        f'{content}</div>',
+        f'<div style="background:#ffffff;border-radius:16px;padding:0;margin-bottom:12px">'
+        f'<div style="background:#ffffff;border:1px solid #e2ece8;'
+        f'border-radius:14px;padding:20px 24px;'
+        f'box-shadow:0 2px 8px rgba(16,185,129,0.07);'
+        f'border-left:4px solid #10b981">'
+        f'{content}'
+        f'</div></div>',
         unsafe_allow_html=True,
     )

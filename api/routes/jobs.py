@@ -195,6 +195,68 @@ def list_jobs(
 
 
 # ============================================================================
+# GET /jobs/with-salary
+# ============================================================================
+# NOTE: This route must be defined BEFORE /{job_id}.
+# FastAPI matches routes in declaration order. If /{job_id} came first,
+# the literal string "with-salary" would be captured as a job_id integer
+# and fail validation, never reaching this handler.
+
+@router.get(
+    "/with-salary",
+    response_model=PaginatedJobsResponse,
+    summary="List jobs that have salary data",
+    description=(
+        "Returns only jobs where salary_min or salary_max is disclosed. "
+        "Supports the same pagination and sorting parameters as GET /jobs. "
+        "Used by the Salary Intelligence dashboard page to avoid sampling "
+        "jobs with no compensation data."
+    ),
+)
+def list_jobs_with_salary(
+    page: int = Query(default=1, ge=1, description="Page number (1-based)"),
+    page_size: int = Query(default=20, ge=1, le=100, description="Results per page (max 100)"),
+    order_by: str = Query(default="posted_at", description="Sort column"),
+    descending: bool = Query(default=True, description="Sort direction"),
+    country: Optional[str] = Query(default=None, max_length=2),
+    source_platform: Optional[str] = Query(default=None, max_length=100),
+    db: Session = Depends(get_db),
+) -> PaginatedJobsResponse:
+    """
+    Delegates entirely to crud.get_jobs(has_salary=True).
+    No new query logic — the filter is implemented once in the CRUD layer.
+    """
+    valid_order_columns = {"posted_at", "created_at", "salary_min", "salary_max", "company_name", "title"}
+    if order_by not in valid_order_columns:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid order_by '{order_by}'. Must be one of: {sorted(valid_order_columns)}",
+        )
+
+    result = crud.get_jobs(
+        db,
+        has_salary=True,
+        country=country,
+        source_platform=source_platform,
+        page=page,
+        page_size=page_size,
+        order_by=order_by,
+        descending=descending,
+    )
+
+    items = [JobSummary.model_validate(job) for job in result["items"]]
+
+    return PaginatedJobsResponse(
+        items=items,
+        total=result["total"],
+        page=result["page"],
+        page_size=result["page_size"],
+        pages=result["pages"],
+    )
+
+
+# ============================================================================
 # GET /jobs/{job_id}
 # ============================================================================
 

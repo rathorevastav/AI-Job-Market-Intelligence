@@ -240,6 +240,28 @@ def get_jobs(
         return {"items": [], "total": 0, "page": 1, "page_size": page_size, "pages": 0}
     return data
 
+def get_jobs_with_salary(
+    country=None,
+    source_platform=None,
+    page=1,
+    page_size=100,
+    posted_after=None,
+):
+    """
+    Fetch only jobs that contain salary information.
+    """
+    params = {
+        "country": country,
+        "source_platform": source_platform,
+        "posted_after": posted_after,
+        "page": page,
+        "page_size": page_size,
+    }
+
+    # Remove None values
+    params = {k: v for k, v in params.items() if v is not None}
+
+    return _get("/jobs/with-salary", params=params)
 
 def get_job_detail(job_id: int) -> Optional[dict[str, Any]]:
     """
