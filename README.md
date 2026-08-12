@@ -431,7 +431,7 @@ All database reads and writes are centralized in `database/crud.py`. Routes in `
 
 ```bash
 git clone https://github.com/rathorevastav/AI-Job-Market-Intelligence.git
-cd AI_Job_Market_Intelligence
+cd AI-Job-Market-Intelligence
 ```
 
 **2. Create and activate a virtual environment**
